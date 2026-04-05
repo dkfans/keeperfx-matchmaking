@@ -8,3 +8,14 @@
 8. Connect 2nd PC to mobile hotspot so it's no longer connected via LAN.
 9. Online matchmaking: Host on 2nd PC. Join from main PC.
 10. Online matchmaking: Host on main PC. Join from 2nd PC.
+
+---
+
+Hosting tested:
+
+debug_block_holepunch 1, IPv6 enabled, ipv6 firewall enabled === Client connects via IPv4 direct-connect
+debug_block_holepunch 1, IPv6 enabled, ipv6 firewall disabled === Client connects via IPv6 direct-connect
+debug_block_holepunch 1, IPv6 disabled === Client connects via IPv4 direct-connect
+debug_block_holepunch 0, IPv6 disabled === IPv4 hole punching matchmaking server
+debug_block_holepunch 0, IPv6 enabled, ipv6 firewall disabled === IPv4 hole punching matchmaking server (doesn't matter if you have CGNAT IPv4)
+debug_block_holepunch 0, IPv6 enabled, ipv6 firewall enabled === IPv4 hole punching matchmaking server (doesn't matter if you have CGNAT IPv4)
