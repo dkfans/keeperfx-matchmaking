@@ -103,11 +103,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 			const lobbies = await this.getLobbies();
 
 			if (data.action === "list") {
-				let version = "";
-				if (typeof data.version === "string") version = data.version;
-				let filteredLobbies = lobbies;
-				if (version) filteredLobbies = new Map(Array.from(lobbies).filter(([, l]) => l.version === version));
-				ws.send(this.lobbyListMessage(filteredLobbies));
+				ws.send(this.lobbyListMessage(lobbies));
 				return;
 			}
 
