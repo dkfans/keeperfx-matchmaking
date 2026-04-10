@@ -42,10 +42,11 @@ export class LobbyRegistry extends DurableObject<Env> {
 	}
 
 	private async getLobbies(): Promise<Map<string, Lobby>> {
-		if (this.lobbies) return this.lobbies;
-		this.lobbies = new Map();
-		for (const [key, lobby] of await this.ctx.storage.list<Lobby>({ prefix: LOBBY_PREFIX })) {
-			this.lobbies.set(key.slice(LOBBY_PREFIX.length), lobby);
+		if (!this.lobbies) {
+			this.lobbies = new Map();
+			for (const [key, lobby] of await this.ctx.storage.list<Lobby>({ prefix: LOBBY_PREFIX })) {
+				this.lobbies.set(key.slice(LOBBY_PREFIX.length), lobby);
+			}
 		}
 		const connectedLobbyIds = new Set(
 			this.ctx.getWebSockets()
