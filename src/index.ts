@@ -15,7 +15,7 @@ interface Lobby {
 
 const MAX_LOBBIES = 100;
 const LOBBY_PREFIX = 'lobby:';
-const PING_TIMEOUT_MS = 1000;
+const PING_TIMEOUT_MS = 5000;
 
 type RequestData = Record<string, unknown> & { action: string | undefined };
 
