@@ -232,8 +232,8 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 			switch (data.action) {
 				case "list":
-					await this.pingLobbies(lobbies);
 					ws.send(this.listMessage(lobbies));
+					this.ctx.waitUntil(this.pingLobbies(lobbies));
 					return;
 				case "create":
 					return this.onCreate(ws, data, lobbies);
