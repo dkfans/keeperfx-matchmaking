@@ -16,13 +16,17 @@ interface Lobby {
 const MAX_LOBBIES = 100;
 const LOBBY_PREFIX = 'lobby:';
 const PING_TIMEOUT_MS = 5000;
+const LOBBY_PING_THROTTLE_MS = 15000;
+const PING_MISSES_BEFORE_DROP = 3;
 
 type RequestData = Record<string, unknown> & { action: string | undefined };
+type LobbyAttachment = { lobbyId?: string };
 
 export class LobbyRegistry extends DurableObject<Env> {
 	private lobbies: Map<string, Lobby> | null = null;
 	private pendingPingPromise: Promise<void> | null = null;
 	private pendingPongs = new Set<string>();
+	private lastPingAt = 0;
 
 	private send(ws: WebSocket, payload: unknown) {
 		ws.send(JSON.stringify(payload));
@@ -32,8 +36,12 @@ export class LobbyRegistry extends DurableObject<Env> {
 		this.send(ws, { type: "error", error });
 	}
 
+	private attachment(ws: WebSocket): LobbyAttachment {
+		return (ws.deserializeAttachment() as LobbyAttachment | null) ?? {};
+	}
+
 	private lobbyId(ws: WebSocket): string | null {
-		const attachment = ws.deserializeAttachment() as { lobbyId: string | undefined } | null;
+		const attachment = this.attachment(ws);
 		if (attachment && typeof attachment.lobbyId === "string") {
 			return attachment.lobbyId;
 		}
@@ -109,6 +117,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		if (this.lobbies) {
 			this.lobbies.delete(id);
 		}
+		this.pendingPongs.delete(id);
 		await this.ctx.storage.delete(`${LOBBY_PREFIX}${id}`);
 		if (ws) {
 			ws.serializeAttachment({});
@@ -121,25 +130,38 @@ export class LobbyRegistry extends DurableObject<Env> {
 			return;
 		}
 
+		if (Date.now() - this.lastPingAt < LOBBY_PING_THROTTLE_MS) return;
+		this.lastPingAt = Date.now();
+
 		this.pendingPingPromise = (async () => {
 			try {
-				const hostLobbyIds: string[] = [];
-				this.pendingPongs.clear();
+				let pendingHosts: { id: string; ws: WebSocket }[] = [];
 				for (const client of this.ctx.getWebSockets()) {
 					const lobbyId = this.lobbyId(client);
 					if (!lobbyId || !lobbies.has(lobbyId)) continue;
-					hostLobbyIds.push(lobbyId);
-					this.send(client, { type: "ping" });
+					pendingHosts.push({ id: lobbyId, ws: client });
 				}
-				if (hostLobbyIds.length === 0) return;
+				if (pendingHosts.length === 0) return;
 
-				await new Promise(resolve => setTimeout(resolve, PING_TIMEOUT_MS));
+				for (let attempt = 0; attempt < PING_MISSES_BEFORE_DROP && pendingHosts.length > 0; attempt++) {
+					this.pendingPongs.clear();
+					for (const { id, ws } of pendingHosts) {
+						if (lobbies.has(id) && this.lobbyId(ws) === id)
+							this.send(ws, { type: "ping" });
+					}
 
-				const toRemove = hostLobbyIds.filter(id => !this.pendingPongs.has(id) && lobbies.has(id));
-				for (const id of toRemove) await this.dropLobby(id);
-				if (toRemove.length) this.broadcast(lobbies);
+					await new Promise(resolve => setTimeout(resolve, PING_TIMEOUT_MS));
+
+					pendingHosts = pendingHosts.filter(({ id, ws }) =>
+						lobbies.has(id) && this.lobbyId(ws) === id && !this.pendingPongs.has(id)
+					);
+				}
+
+				for (const { id, ws } of pendingHosts) await this.dropLobby(id, ws);
+				if (pendingHosts.length) this.broadcast(lobbies);
 			} finally {
 				this.pendingPingPromise = null;
+				this.pendingPongs.clear();
 			}
 		})();
 
@@ -224,7 +246,8 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 			if (data.action === "pong") {
 				const lobbyId = this.lobbyId(ws);
-				if (lobbyId && this.pendingPingPromise) this.pendingPongs.add(lobbyId);
+				if (lobbyId && this.pendingPingPromise)
+					this.pendingPongs.add(lobbyId);
 				return;
 			}
 
