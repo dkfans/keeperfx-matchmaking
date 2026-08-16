@@ -114,7 +114,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 				client.send(message);
 	}
 
-	private async notifyDiscord(lobby: Lobby, action: "opened" | "closed" | "started", players: string[] = []) {
+	private async notifyDiscord(lobby: Lobby, action: "opened" | "closed" | "started" | "timed_out", players: string[] = []) {
 		if (!this.env.DISCORD_WEBHOOK_URL) return;
 		try {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
@@ -122,6 +122,8 @@ export class LobbyRegistry extends DurableObject<Env> {
 			let content = `**${lobby.name || "Unknown"}** ${action} a lobby (**${lobby.version || "Unknown"}**)`;
 			if (action === "started")
 				content = `**${lobby.name || "Unknown"}** started a match (**${lobby.version || "Unknown"}**). Players: **${players.join("**, **")}**`;
+			if (action === "timed_out")
+				content = `**${lobby.name || "Unknown"}**'s lobby was closed because it timed out.`;
 			const response = await fetch(webhookUrl, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -137,7 +139,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		}
 	}
 
-	private async dropLobby(id: string, ws: WebSocket | null = null, action: "closed" | "started" = "closed", players: string[] = []) {
+	private async dropLobby(id: string, ws: WebSocket | null = null, action: "closed" | "started" | "timed_out" = "closed", players: string[] = []) {
 		const lobby = this.lobbies?.get(id);
 		if (this.lobbies) {
 			this.lobbies.delete(id);
@@ -197,7 +199,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 					);
 				}
 
-				for (const { id, ws } of pendingHosts) await this.dropLobby(id, ws);
+				for (const { id, ws } of pendingHosts) await this.dropLobby(id, ws, "timed_out");
 				if (pendingHosts.length) this.broadcast(lobbies);
 			} finally {
 				this.pendingPingPromise = null;
