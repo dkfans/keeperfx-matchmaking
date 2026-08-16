@@ -114,17 +114,20 @@ export class LobbyRegistry extends DurableObject<Env> {
 				client.send(message);
 	}
 
-	private async notifyDiscord(lobby: Lobby, action: "opened" | "closed") {
+	private async notifyDiscord(lobby: Lobby, action: "opened" | "closed" | "started", players: string[] = []) {
 		if (!this.env.DISCORD_WEBHOOK_URL) return;
 		try {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
 			webhookUrl.searchParams.set("wait", "true");
+			let content = `**${lobby.name || "Unknown"}** ${action} a lobby (**${lobby.version || "Unknown"}**)`;
+			if (action === "started")
+				content = `**${lobby.name || "Unknown"}** started a match (**${lobby.version || "Unknown"}**). Players: **${players.join("**, **")}**`;
 			const response = await fetch(webhookUrl, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					allowed_mentions: { parse: [] },
-					content: `**${lobby.name || "Unknown"}** ${action} a lobby (**${lobby.version || "Unknown"}**)`
+					content
 				})
 			});
 			if (!response.ok)
@@ -134,7 +137,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		}
 	}
 
-	private async dropLobby(id: string, ws: WebSocket | null = null) {
+	private async dropLobby(id: string, ws: WebSocket | null = null, action: "closed" | "started" = "closed", players: string[] = []) {
 		const lobby = this.lobbies?.get(id);
 		if (this.lobbies) {
 			this.lobbies.delete(id);
@@ -145,8 +148,20 @@ export class LobbyRegistry extends DurableObject<Env> {
 			ws.serializeAttachment({});
 		}
 		if (lobby) {
-			this.ctx.waitUntil(this.notifyDiscord(lobby, "closed"));
+			this.ctx.waitUntil(this.notifyDiscord(lobby, action, players));
 		}
+	}
+
+	private playerNames(value: unknown): string[] {
+		const players: string[] = [];
+		if (!Array.isArray(value)) return players;
+		for (const entry of value) {
+			if (typeof entry !== "string") continue;
+			const player = entry.trim().slice(0, 32);
+			if (player) players.push(player);
+			if (players.length === 4) break;
+		}
+		return players;
 	}
 
 	private async pingLobbies(lobbies: Map<string, Lobby>) {
@@ -234,6 +249,15 @@ export class LobbyRegistry extends DurableObject<Env> {
 		this.broadcast(lobbies);
 	}
 
+	private async onGameStarted(ws: WebSocket, data: RequestData, lobbies: Map<string, Lobby>) {
+		const lobbyId = this.string(data.id);
+		const players = this.playerNames(data.players);
+		if (lobbyId !== this.lobbyId(ws) || !lobbies.has(lobbyId) || !players.length)
+			return this.error(ws, "Invalid match start");
+		await this.dropLobby(lobbyId, ws, "started", players);
+		this.broadcast(lobbies);
+	}
+
 	private async onPunch(ws: WebSocket, data: RequestData, lobbies: Map<string, Lobby>) {
 		const ipv4Port = this.port(data.myIpv4Port);
 		const ipv6Port = this.port(data.myIpv6Port);
@@ -288,6 +312,8 @@ export class LobbyRegistry extends DurableObject<Env> {
 					return this.onCreate(ws, data, lobbies);
 				case "delete":
 					return this.onDelete(ws, data, lobbies);
+				case "game_started":
+					return this.onGameStarted(ws, data, lobbies);
 				case "punch":
 					return this.onPunch(ws, data, lobbies);
 				default:
