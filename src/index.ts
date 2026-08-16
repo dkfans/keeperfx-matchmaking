@@ -114,14 +114,23 @@ export class LobbyRegistry extends DurableObject<Env> {
 				client.send(message);
 	}
 
-	private async notifyDiscord(lobby: Lobby, action: "opened" | "closed" | "started" | "timed_out", players: string[] = []) {
+	private async notifyDiscord(lobby: Lobby, action: "opened" | "cancelled" | "disconnected" | "started" | "timed_out", players: string[] = [], mapName = "", mapNumber = 0) {
 		if (!this.env.DISCORD_WEBHOOK_URL) return;
 		try {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
 			webhookUrl.searchParams.set("wait", "true");
-			let content = `**${lobby.name || "Unknown"}** ${action} a lobby (**${lobby.version || "Unknown"}**)`;
-			if (action === "started")
-				content = `**${lobby.name || "Unknown"}** started a match (**${lobby.version || "Unknown"}**). Players: **${players.join("**, **")}**`;
+			let content = `**${lobby.name || "Unknown"}** opened a lobby (**${lobby.version || "Unknown"}**)`;
+			if (action === "cancelled")
+				content = `**${lobby.name || "Unknown"}** cancelled their lobby.`;
+			if (action === "disconnected")
+				content = `**${lobby.name || "Unknown"}**'s lobby was closed because the host disconnected.`;
+			if (action === "started") {
+				let map = mapName;
+				if (mapName && mapNumber) map = `${mapName} (#${mapNumber})`;
+				if (!mapName && mapNumber) map = `#${mapNumber}`;
+				content = `**${lobby.name || "Unknown"}** started a match. Players: **${players.join("**, **")}**`;
+				if (map) content += `. Map: **${map}**`;
+			}
 			if (action === "timed_out")
 				content = `**${lobby.name || "Unknown"}**'s lobby was closed because it timed out.`;
 			const response = await fetch(webhookUrl, {
@@ -139,7 +148,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		}
 	}
 
-	private async dropLobby(id: string, ws: WebSocket | null = null, action: "closed" | "started" | "timed_out" = "closed", players: string[] = []) {
+	private async dropLobby(id: string, ws: WebSocket | null = null, action: "cancelled" | "disconnected" | "started" | "timed_out" = "disconnected", players: string[] = [], mapName = "", mapNumber = 0) {
 		const lobby = this.lobbies?.get(id);
 		if (this.lobbies) {
 			this.lobbies.delete(id);
@@ -150,7 +159,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 			ws.serializeAttachment({});
 		}
 		if (lobby) {
-			this.ctx.waitUntil(this.notifyDiscord(lobby, action, players));
+			this.ctx.waitUntil(this.notifyDiscord(lobby, action, players, mapName, mapNumber));
 		}
 	}
 
@@ -224,7 +233,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		const ipv4Port = this.port(data.ipv4Port);
 		if (!ipv4Port) return this.error(ws, "Invalid port");
 		const currentLobbyId = this.lobbyId(ws);
-		if (currentLobbyId) await this.dropLobby(currentLobbyId, ws);
+		if (currentLobbyId) await this.dropLobby(currentLobbyId, ws, "cancelled");
 		if (lobbies.size >= MAX_LOBBIES) return this.error(ws, "Server full");
 
 		const id = crypto.randomUUID().replace(/-/g, '');
@@ -246,7 +255,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		const lobbyId = this.string(data.id);
 		if (lobbyId !== this.lobbyId(ws) || !lobbies.has(lobbyId))
 			return this.send(ws, { type: "deleted", success: false });
-		await this.dropLobby(lobbyId, ws);
+		await this.dropLobby(lobbyId, ws, "cancelled");
 		this.send(ws, { type: "deleted", success: true });
 		this.broadcast(lobbies);
 	}
@@ -254,9 +263,12 @@ export class LobbyRegistry extends DurableObject<Env> {
 	private async onGameStarted(ws: WebSocket, data: RequestData, lobbies: Map<string, Lobby>) {
 		const lobbyId = this.string(data.id);
 		const players = this.playerNames(data.players);
+		const mapName = this.string(data.mapName).trim().slice(0, 128);
+		let mapNumber = Number(data.mapNumber);
+		if (!Number.isInteger(mapNumber) || mapNumber <= 0) mapNumber = 0;
 		if (lobbyId !== this.lobbyId(ws) || !lobbies.has(lobbyId) || !players.length)
 			return this.error(ws, "Invalid match start");
-		await this.dropLobby(lobbyId, ws, "started", players);
+		await this.dropLobby(lobbyId, ws, "started", players, mapName, mapNumber);
 		this.broadcast(lobbies);
 	}
 
