@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 
 interface Env {
 	LOBBY_REGISTRY: DurableObjectNamespace<LobbyRegistry>;
+	DISCORD_WEBHOOK_URL?: string;
 }
 
 interface Lobby {
@@ -113,7 +114,28 @@ export class LobbyRegistry extends DurableObject<Env> {
 				client.send(message);
 	}
 
+	private async notifyDiscord(lobby: Lobby, action: "opened" | "closed") {
+		if (!this.env.DISCORD_WEBHOOK_URL) return;
+		try {
+			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
+			webhookUrl.searchParams.set("wait", "true");
+			const response = await fetch(webhookUrl, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					allowed_mentions: { parse: [] },
+					content: `**${lobby.name || "Unknown"}** ${action} a lobby (**${lobby.version || "Unknown"}**)`
+				})
+			});
+			if (!response.ok)
+				console.error(`[Discord] Webhook failed (${response.status}): ${await response.text()}`);
+		} catch (error) {
+			console.error("[Discord] Webhook failed:", error);
+		}
+	}
+
 	private async dropLobby(id: string, ws: WebSocket | null = null) {
+		const lobby = this.lobbies?.get(id);
 		if (this.lobbies) {
 			this.lobbies.delete(id);
 		}
@@ -121,6 +143,9 @@ export class LobbyRegistry extends DurableObject<Env> {
 		await this.ctx.storage.delete(`${LOBBY_PREFIX}${id}`);
 		if (ws) {
 			ws.serializeAttachment({});
+		}
+		if (lobby) {
+			this.ctx.waitUntil(this.notifyDiscord(lobby, "closed"));
 		}
 	}
 
@@ -188,7 +213,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		const id = crypto.randomUUID().replace(/-/g, '');
 		const { ipv4, ipv6 } = this.ips(ws, data.ipv4, data.ipv6);
 		const name = this.string(data.name, "Unknown").slice(0, 64);
-		const version = this.string(data.version).slice(0, 32);
+		const version = this.string(data.version).trim().slice(0, 32);
 		const ipv6Port = this.port(data.ipv6Port) || ipv4Port;
 		const lobby = { name, ipv4, ipv6, ipv4Port, ipv6Port, version };
 
@@ -197,6 +222,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		ws.serializeAttachment({ lobbyId: id });
 		this.send(ws, { type: "created", id });
 		this.broadcast(lobbies);
+		this.ctx.waitUntil(this.notifyDiscord(lobby, "opened"));
 	}
 
 	private async onDelete(ws: WebSocket, data: RequestData, lobbies: Map<string, Lobby>) {
