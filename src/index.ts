@@ -38,13 +38,9 @@ export class LobbyRegistry extends DurableObject<Env> {
 		this.send(ws, { type: "error", error });
 	}
 
-	private attachment(ws: WebSocket): LobbyAttachment {
-		return (ws.deserializeAttachment() as LobbyAttachment | null) ?? {};
-	}
-
 	private lobbyId(ws: WebSocket): string | null {
-		const attachment = this.attachment(ws);
-		if (attachment && typeof attachment.lobbyId === "string") {
+		const attachment = ws.deserializeAttachment() as LobbyAttachment | null;
+		if (typeof attachment?.lobbyId === "string") {
 			return attachment.lobbyId;
 		}
 		return null;
@@ -103,9 +99,9 @@ export class LobbyRegistry extends DurableObject<Env> {
 			const lobbyId = this.lobbyId(ws);
 			if (lobbyId) connectedLobbyIds.add(lobbyId);
 		}
-		for (const id of [...this.lobbies.keys()].filter(id => !connectedLobbyIds.has(id))) {
-			const lobby = this.lobbies.get(id);
-			await this.dropLobby(id, null, lobby?.resultActions ? "disconnected" : "closed");
+		for (const [id, lobby] of [...this.lobbies]) {
+			if (!connectedLobbyIds.has(id))
+				await this.dropLobby(id, null, lobby.resultActions ? "disconnected" : "closed");
 		}
 		return this.lobbies;
 	}
@@ -126,24 +122,25 @@ export class LobbyRegistry extends DurableObject<Env> {
 		try {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
 			webhookUrl.searchParams.set("wait", "true");
-			let content = `**${lobby.name || "Unknown"}** opened a lobby (**${lobby.version || "Unknown"}**)`;
+			const name = lobby.name || "Unknown";
+			let content = `**${name}** opened a lobby (**${lobby.version || "Unknown"}**)`;
 			if (action === "cancelled")
-				content = `**${lobby.name || "Unknown"}** cancelled their lobby.`;
+				content = `**${name}** cancelled their lobby.`;
 			if (action === "closed")
-				content = `**${lobby.name || "Unknown"}** closed their lobby / started the game.`;
+				content = `**${name}** closed their lobby / started the game.`;
 			if (action === "disconnected")
-				content = `**${lobby.name || "Unknown"}**'s lobby was closed because the host disconnected.`;
+				content = `**${name}**'s lobby was closed because the host disconnected.`;
 			if (action === "started") {
 				let map = mapName;
 				if (mapName && mapNumber) map = `${mapName} (#${mapNumber})`;
 				if (!mapName && mapNumber) map = `#${mapNumber}`;
-				content = `**${lobby.name || "Unknown"}** started a match`;
+				content = `**${name}** started a match`;
 				if (players.length) content += `. Players: **${players.join("**, **")}**`;
 				if (map) content += `. Map: **${map}**`;
 				content += ".";
 			}
 			if (action === "timed_out")
-				content = `**${lobby.name || "Unknown"}**'s lobby was closed because it timed out.`;
+				content = `**${name}**'s lobby was closed because it timed out.`;
 			const response = await fetch(webhookUrl, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -161,17 +158,12 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 	private async dropLobby(id: string, ws: WebSocket | null = null, action: "cancelled" | "closed" | "disconnected" | "started" | "timed_out" = "disconnected", players: string[] = [], mapName = "", mapNumber = 0) {
 		const lobby = this.lobbies?.get(id);
-		if (this.lobbies) {
-			this.lobbies.delete(id);
-		}
+		this.lobbies?.delete(id);
 		this.pendingPongs.delete(id);
 		await this.ctx.storage.delete(`${LOBBY_PREFIX}${id}`);
-		if (ws) {
-			ws.serializeAttachment({});
-		}
-		if (lobby) {
+		if (ws) ws.serializeAttachment({});
+		if (lobby)
 			this.ctx.waitUntil(this.notifyDiscord(lobby, action, players, mapName, mapNumber));
-		}
 	}
 
 	private playerNames(value: unknown): string[] {
@@ -187,10 +179,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 	}
 
 	private async pingLobbies(lobbies: Map<string, Lobby>) {
-		if (this.pendingPingPromise) {
-			await this.pendingPingPromise;
-			return;
-		}
+		if (this.pendingPingPromise) return this.pendingPingPromise;
 
 		if (Date.now() - this.lastPingAt < LOBBY_PING_THROTTLE_MS) return;
 		this.lastPingAt = Date.now();
@@ -227,7 +216,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 			}
 		})();
 
-		await this.pendingPingPromise;
+		return this.pendingPingPromise;
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -281,6 +270,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		if (lobbyId !== this.lobbyId(ws) || !lobbies.has(lobbyId))
 			return this.error(ws, "Invalid match start");
 		await this.dropLobby(lobbyId, ws, "started", players, mapName, mapNumber);
+		this.send(ws, { type: "game_started", success: true });
 		this.broadcast(lobbies);
 	}
 
@@ -372,6 +362,6 @@ export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const { pathname } = new URL(request.url);
 		if (pathname === '/ip') return new Response(request.headers.get("CF-Connecting-IP") || "");
-		return env.LOBBY_REGISTRY.get(env.LOBBY_REGISTRY.idFromName('global')).fetch(request);
+		return env.LOBBY_REGISTRY.getByName('global').fetch(request);
 	}
 } satisfies ExportedHandler<Env>;
