@@ -12,6 +12,7 @@ interface Lobby {
 	ipv4Port: number;
 	ipv6Port: number;
 	version: string;
+	resultActions?: boolean;
 }
 
 const MAX_LOBBIES = 100;
@@ -88,7 +89,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		return ips;
 	}
 
-	private async getLobbies(): Promise<Map<string, Lobby>> {
+	private async getLobbies(ws: WebSocket | null = null): Promise<Map<string, Lobby>> {
 		if (!this.lobbies) {
 			this.lobbies = new Map();
 			for (const [key, lobby] of await this.ctx.storage.list<Lobby>({ prefix: LOBBY_PREFIX })) {
@@ -98,8 +99,14 @@ export class LobbyRegistry extends DurableObject<Env> {
 		const connectedLobbyIds = new Set(
 			this.ctx.getWebSockets().map(ws => this.lobbyId(ws)).filter((id): id is string => id !== null)
 		);
-		for (const id of [...this.lobbies.keys()].filter(id => !connectedLobbyIds.has(id)))
-			await this.dropLobby(id);
+		if (ws) {
+			const lobbyId = this.lobbyId(ws);
+			if (lobbyId) connectedLobbyIds.add(lobbyId);
+		}
+		for (const id of [...this.lobbies.keys()].filter(id => !connectedLobbyIds.has(id))) {
+			const lobby = this.lobbies.get(id);
+			await this.dropLobby(id, null, lobby?.resultActions ? "disconnected" : "closed");
+		}
 		return this.lobbies;
 	}
 
@@ -114,7 +121,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 				client.send(message);
 	}
 
-	private async notifyDiscord(lobby: Lobby, action: "opened" | "cancelled" | "disconnected" | "started" | "timed_out", players: string[] = [], mapName = "", mapNumber = 0) {
+	private async notifyDiscord(lobby: Lobby, action: "opened" | "cancelled" | "closed" | "disconnected" | "started" | "timed_out", players: string[] = [], mapName = "", mapNumber = 0) {
 		if (!this.env.DISCORD_WEBHOOK_URL) return;
 		try {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
@@ -122,14 +129,18 @@ export class LobbyRegistry extends DurableObject<Env> {
 			let content = `**${lobby.name || "Unknown"}** opened a lobby (**${lobby.version || "Unknown"}**)`;
 			if (action === "cancelled")
 				content = `**${lobby.name || "Unknown"}** cancelled their lobby.`;
+			if (action === "closed")
+				content = `**${lobby.name || "Unknown"}** closed their lobby / started the game.`;
 			if (action === "disconnected")
 				content = `**${lobby.name || "Unknown"}**'s lobby was closed because the host disconnected.`;
 			if (action === "started") {
 				let map = mapName;
 				if (mapName && mapNumber) map = `${mapName} (#${mapNumber})`;
 				if (!mapName && mapNumber) map = `#${mapNumber}`;
-				content = `**${lobby.name || "Unknown"}** started a match. Players: **${players.join("**, **")}**`;
+				content = `**${lobby.name || "Unknown"}** started a match`;
+				if (players.length) content += `. Players: **${players.join("**, **")}**`;
 				if (map) content += `. Map: **${map}**`;
+				content += ".";
 			}
 			if (action === "timed_out")
 				content = `**${lobby.name || "Unknown"}**'s lobby was closed because it timed out.`;
@@ -148,7 +159,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		}
 	}
 
-	private async dropLobby(id: string, ws: WebSocket | null = null, action: "cancelled" | "disconnected" | "started" | "timed_out" = "disconnected", players: string[] = [], mapName = "", mapNumber = 0) {
+	private async dropLobby(id: string, ws: WebSocket | null = null, action: "cancelled" | "closed" | "disconnected" | "started" | "timed_out" = "disconnected", players: string[] = [], mapName = "", mapNumber = 0) {
 		const lobby = this.lobbies?.get(id);
 		if (this.lobbies) {
 			this.lobbies.delete(id);
@@ -241,7 +252,8 @@ export class LobbyRegistry extends DurableObject<Env> {
 		const name = this.string(data.name, "Unknown").slice(0, 64);
 		const version = this.string(data.version).trim().slice(0, 32);
 		const ipv6Port = this.port(data.ipv6Port) || ipv4Port;
-		const lobby = { name, ipv4, ipv6, ipv4Port, ipv6Port, version };
+		const resultActions = data.resultActions === true;
+		const lobby = { name, ipv4, ipv6, ipv4Port, ipv6Port, version, resultActions };
 
 		lobbies.set(id, lobby);
 		await this.ctx.storage.put(`${LOBBY_PREFIX}${id}`, lobby);
@@ -251,11 +263,11 @@ export class LobbyRegistry extends DurableObject<Env> {
 		this.ctx.waitUntil(this.notifyDiscord(lobby, "opened"));
 	}
 
-	private async onDelete(ws: WebSocket, data: RequestData, lobbies: Map<string, Lobby>) {
+	private async onDelete(ws: WebSocket, data: RequestData, lobbies: Map<string, Lobby>, action: "cancelled" | "closed") {
 		const lobbyId = this.string(data.id);
 		if (lobbyId !== this.lobbyId(ws) || !lobbies.has(lobbyId))
 			return this.send(ws, { type: "deleted", success: false });
-		await this.dropLobby(lobbyId, ws, "cancelled");
+		await this.dropLobby(lobbyId, ws, action);
 		this.send(ws, { type: "deleted", success: true });
 		this.broadcast(lobbies);
 	}
@@ -266,7 +278,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		const mapName = this.string(data.mapName).trim().slice(0, 128);
 		let mapNumber = Number(data.mapNumber);
 		if (!Number.isInteger(mapNumber) || mapNumber <= 0) mapNumber = 0;
-		if (lobbyId !== this.lobbyId(ws) || !lobbies.has(lobbyId) || !players.length)
+		if (lobbyId !== this.lobbyId(ws) || !lobbies.has(lobbyId))
 			return this.error(ws, "Invalid match start");
 		await this.dropLobby(lobbyId, ws, "started", players, mapName, mapNumber);
 		this.broadcast(lobbies);
@@ -283,7 +295,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 		const hostWs = this.ctx.getWebSockets().find(client => this.lobbyId(client) === lobbyId);
 		if (!hostWs) {
-			await this.dropLobby(lobbyId);
+			await this.dropLobby(lobbyId, null, lobby.resultActions ? "disconnected" : "closed");
 			this.broadcast(lobbies);
 			return this.error(ws, "Lobby not found");
 		}
@@ -315,7 +327,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 				return;
 			}
 
-			const lobbies = await this.getLobbies();
+			const lobbies = await this.getLobbies(ws);
 
 			switch (data.action) {
 				case "list":
@@ -325,7 +337,9 @@ export class LobbyRegistry extends DurableObject<Env> {
 				case "create":
 					return this.onCreate(ws, data, lobbies);
 				case "delete":
-					return this.onDelete(ws, data, lobbies);
+					return this.onDelete(ws, data, lobbies, "closed");
+				case "cancel":
+					return this.onDelete(ws, data, lobbies, "cancelled");
 				case "game_started":
 					return this.onGameStarted(ws, data, lobbies);
 				case "punch":
@@ -342,11 +356,11 @@ export class LobbyRegistry extends DurableObject<Env> {
 	async webSocketClose(ws: WebSocket) {
 		const lobbyId = this.lobbyId(ws);
 		if (!lobbyId) return;
-		const lobbies = await this.getLobbies();
-		if (lobbies.has(lobbyId)) {
-			await this.dropLobby(lobbyId);
-			this.broadcast(lobbies);
-		}
+		const lobbies = await this.getLobbies(ws);
+		const lobby = lobbies.get(lobbyId);
+		if (!lobby) return;
+		await this.dropLobby(lobbyId, null, lobby.resultActions ? "disconnected" : "closed");
+		this.broadcast(lobbies);
 	}
 
 	async webSocketError(ws: WebSocket) {
