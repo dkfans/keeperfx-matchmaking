@@ -132,7 +132,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 				content = `**${name}**'s lobby was closed because the host disconnected.`;
 			if (action === "started") {
 				let map = mapName;
-				if (mapName && mapNumber) map = `${mapName} (#${mapNumber})`;
+				if (mapName && mapNumber) map = `${mapName} [${mapNumber}]`;
 				if (!mapName && mapNumber) map = `#${mapNumber}`;
 				content = `**${name}** started a match`;
 				if (players.length) content += `. Players: **${players.join("**, **")}**`;
