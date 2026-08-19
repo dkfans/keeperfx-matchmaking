@@ -23,6 +23,7 @@ const PING_MISSES_BEFORE_DROP = 3;
 
 type RequestData = Record<string, unknown> & { action: string | undefined };
 type LobbyAttachment = { lobbyId?: string };
+const escapeDiscordMarkdown = (value: string) => value.replace(/[\r\n]+/g, " ").replace(/([\\`*_{}\[\]()<>#+\-.!|~])/g, "\\$1");
 
 export class LobbyRegistry extends DurableObject<Env> {
 	private lobbies: Map<string, Lobby> | null = null;
@@ -122,8 +123,8 @@ export class LobbyRegistry extends DurableObject<Env> {
 		try {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
 			webhookUrl.searchParams.set("wait", "true");
-			const name = lobby.name || "Unknown";
-			let content = `**${name}** opened a lobby (**${lobby.version || "Unknown"}**)`;
+			const name = escapeDiscordMarkdown(lobby.name || "Unknown");
+			let content = `**${name}** opened a lobby (**${escapeDiscordMarkdown(lobby.version || "Unknown")}**)`;
 			if (action === "cancelled")
 				content = `**${name}** cancelled their lobby.`;
 			if (action === "closed")
@@ -131,11 +132,11 @@ export class LobbyRegistry extends DurableObject<Env> {
 			if (action === "disconnected")
 				content = `**${name}**'s lobby was closed because the host disconnected.`;
 			if (action === "started") {
-				let map = mapName;
-				if (mapName && mapNumber) map = `${mapName} [${mapNumber}]`;
+				let map = escapeDiscordMarkdown(mapName);
+				if (mapName && mapNumber) map = `${map} [${mapNumber}]`;
 				if (!mapName && mapNumber) map = `#${mapNumber}`;
 				content = `**${name}** started a match`;
-				if (players.length) content += `. Players: **${players.join("**, **")}**`;
+				if (players.length) content += `. Players: **${players.map(escapeDiscordMarkdown).join("**, **")}**`;
 				if (map) content += `. Map: **${map}**`;
 				content += ".";
 			}
