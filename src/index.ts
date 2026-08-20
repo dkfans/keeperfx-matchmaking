@@ -119,6 +119,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 	}
 
 	private async notifyDiscord(lobby: Lobby, action: "opened" | "cancelled" | "closed" | "disconnected" | "started" | "timed_out", players: string[] = [], mapName = "", mapNumber = 0) {
+		if (lobby.name === "test") return;
 		if (!this.env.DISCORD_WEBHOOK_URL) return;
 		try {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
