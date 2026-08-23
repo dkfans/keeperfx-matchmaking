@@ -17,19 +17,20 @@ interface Lobby {
 
 const MAX_LOBBIES = 100;
 const LOBBY_PREFIX = 'lobby:';
-const PING_TIMEOUT_MS = 5000;
-const LOBBY_PING_THROTTLE_MS = 15000;
-const PING_MISSES_BEFORE_DROP = 3;
+const HEARTBEAT_ACK_TIMEOUT_MS = 5000;
+const LOBBY_HEARTBEAT_THROTTLE_MS = 30000;
+const HEARTBEAT_FAILURE_LIMIT = 3;
+const TEST_LOBBY_FAILURE_DELAY_MS = 60000;
 
 type RequestData = Record<string, unknown> & { action: string | undefined };
-type LobbyAttachment = { lobbyId?: string };
+type LobbyAttachment = { lobbyId?: string; testFailureAt?: number };
 const escapeDiscordMarkdown = (value: string) => value.replace(/[\r\n]+/g, " ").replace(/([\\`*_{}\[\]()<>#+\-.!|~])/g, "\\$1");
 
 export class LobbyRegistry extends DurableObject<Env> {
 	private lobbies: Map<string, Lobby> | null = null;
-	private pendingPingPromise: Promise<void> | null = null;
-	private pendingPongs = new Set<string>();
-	private lastPingAt = 0;
+	private pendingHeartbeatPromise: Promise<void> | null = null;
+	private heartbeatAcknowledgements = new Set<string>();
+	private lastHeartbeatCheckAt = 0;
 
 	private send(ws: WebSocket, payload: unknown) {
 		ws.send(JSON.stringify(payload));
@@ -161,7 +162,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 	private async dropLobby(id: string, ws: WebSocket | null = null, action: "cancelled" | "closed" | "disconnected" | "started" | "timed_out" = "disconnected", players: string[] = [], mapName = "", mapNumber = 0) {
 		const lobby = this.lobbies?.get(id);
 		this.lobbies?.delete(id);
-		this.pendingPongs.delete(id);
+		this.heartbeatAcknowledgements.delete(id);
 		await this.ctx.storage.delete(`${LOBBY_PREFIX}${id}`);
 		if (ws) ws.serializeAttachment({});
 		if (lobby)
@@ -180,13 +181,13 @@ export class LobbyRegistry extends DurableObject<Env> {
 		return players;
 	}
 
-	private async pingLobbies(lobbies: Map<string, Lobby>) {
-		if (this.pendingPingPromise) return this.pendingPingPromise;
+	private async checkLobbyHeartbeats(lobbies: Map<string, Lobby>) {
+		if (this.pendingHeartbeatPromise) return this.pendingHeartbeatPromise;
 
-		if (Date.now() - this.lastPingAt < LOBBY_PING_THROTTLE_MS) return;
-		this.lastPingAt = Date.now();
+		if (Date.now() - this.lastHeartbeatCheckAt < LOBBY_HEARTBEAT_THROTTLE_MS) return;
+		this.lastHeartbeatCheckAt = Date.now();
 
-		this.pendingPingPromise = (async () => {
+		this.pendingHeartbeatPromise = (async () => {
 			try {
 				let pendingHosts: { id: string; ws: WebSocket }[] = [];
 				for (const client of this.ctx.getWebSockets()) {
@@ -196,29 +197,29 @@ export class LobbyRegistry extends DurableObject<Env> {
 				}
 				if (pendingHosts.length === 0) return;
 
-				for (let attempt = 0; attempt < PING_MISSES_BEFORE_DROP && pendingHosts.length > 0; attempt++) {
-					this.pendingPongs.clear();
+				for (let attempt = 0; attempt < HEARTBEAT_FAILURE_LIMIT && pendingHosts.length > 0; attempt++) {
+					this.heartbeatAcknowledgements.clear();
 					for (const { id, ws } of pendingHosts) {
 						if (lobbies.has(id) && this.lobbyId(ws) === id)
 							this.send(ws, { type: "ping" });
 					}
 
-					await new Promise(resolve => setTimeout(resolve, PING_TIMEOUT_MS));
+					await new Promise(resolve => setTimeout(resolve, HEARTBEAT_ACK_TIMEOUT_MS));
 
 					pendingHosts = pendingHosts.filter(({ id, ws }) =>
-						lobbies.has(id) && this.lobbyId(ws) === id && !this.pendingPongs.has(id)
+						lobbies.has(id) && this.lobbyId(ws) === id && !this.heartbeatAcknowledgements.has(id)
 					);
 				}
 
 				for (const { id, ws } of pendingHosts) await this.dropLobby(id, ws, "timed_out");
 				if (pendingHosts.length) this.broadcast(lobbies);
 			} finally {
-				this.pendingPingPromise = null;
-				this.pendingPongs.clear();
+				this.pendingHeartbeatPromise = null;
+				this.heartbeatAcknowledgements.clear();
 			}
 		})();
 
-		return this.pendingPingPromise;
+		return this.pendingHeartbeatPromise;
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -248,7 +249,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 		lobbies.set(id, lobby);
 		await this.ctx.storage.put(`${LOBBY_PREFIX}${id}`, lobby);
-		ws.serializeAttachment({ lobbyId: id });
+		ws.serializeAttachment({ lobbyId: id, testFailureAt: name === "test" ? Date.now() + TEST_LOBBY_FAILURE_DELAY_MS : undefined });
 		this.send(ws, { type: "created", id });
 		this.broadcast(lobbies);
 		this.ctx.waitUntil(this.notifyDiscord(lobby, "opened"));
@@ -314,9 +315,15 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 			if (data.action === "pong") {
 				const lobbyId = this.lobbyId(ws);
-				if (lobbyId && this.pendingPingPromise)
-					this.pendingPongs.add(lobbyId);
+				if (lobbyId && this.pendingHeartbeatPromise)
+					this.heartbeatAcknowledgements.add(lobbyId);
 				return;
+			}
+			if (data.action === "ping") {
+				const attachment = ws.deserializeAttachment() as LobbyAttachment;
+				if (!attachment.lobbyId) return this.error(ws, "Host not connected");
+				if (attachment.testFailureAt !== undefined && Date.now() >= attachment.testFailureAt) return;
+				return this.send(ws, { type: "pong" });
 			}
 
 			const lobbies = await this.getLobbies(ws);
@@ -324,7 +331,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 			switch (data.action) {
 				case "list":
 					ws.send(this.listMessage(lobbies));
-					this.ctx.waitUntil(this.pingLobbies(lobbies));
+					this.ctx.waitUntil(this.checkLobbyHeartbeats(lobbies));
 					return;
 				case "create":
 					return this.onCreate(ws, data, lobbies);
