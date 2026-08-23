@@ -20,10 +20,9 @@ const LOBBY_PREFIX = 'lobby:';
 const HEARTBEAT_ACK_TIMEOUT_MS = 5000;
 const LOBBY_HEARTBEAT_THROTTLE_MS = 30000;
 const HEARTBEAT_FAILURE_LIMIT = 3;
-const TEST_LOBBY_FAILURE_DELAY_MS = 60000;
 
 type RequestData = Record<string, unknown> & { action: string | undefined };
-type LobbyAttachment = { lobbyId?: string; testFailureAt?: number };
+type LobbyAttachment = { lobbyId?: string };
 const escapeDiscordMarkdown = (value: string) => value.replace(/[\r\n]+/g, " ").replace(/([\\`*_{}\[\]()<>#+\-.!|~])/g, "\\$1");
 
 export class LobbyRegistry extends DurableObject<Env> {
@@ -249,7 +248,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 		lobbies.set(id, lobby);
 		await this.ctx.storage.put(`${LOBBY_PREFIX}${id}`, lobby);
-		ws.serializeAttachment({ lobbyId: id, testFailureAt: name === "test" ? Date.now() + TEST_LOBBY_FAILURE_DELAY_MS : undefined });
+		ws.serializeAttachment({ lobbyId: id });
 		this.send(ws, { type: "created", id });
 		this.broadcast(lobbies);
 		this.ctx.waitUntil(this.notifyDiscord(lobby, "opened"));
@@ -322,7 +321,6 @@ export class LobbyRegistry extends DurableObject<Env> {
 			if (data.action === "ping") {
 				const attachment = ws.deserializeAttachment() as LobbyAttachment;
 				if (!attachment.lobbyId) return this.error(ws, "Host not connected");
-				if (attachment.testFailureAt !== undefined && Date.now() >= attachment.testFailureAt) return;
 				return this.send(ws, { type: "pong" });
 			}
 
