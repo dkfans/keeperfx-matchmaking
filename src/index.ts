@@ -11,6 +11,7 @@ interface Lobby {
 	ipv6: string;
 	ipv4Port: number;
 	ipv6Port: number;
+	directIpv4Port: number;
 	version: string;
 	resultActions?: boolean;
 }
@@ -108,7 +109,16 @@ export class LobbyRegistry extends DurableObject<Env> {
 	}
 
 	private listMessage(lobbies: Map<string, Lobby>): string {
-		return JSON.stringify({ type: "lobbies", lobbies: Array.from(lobbies, ([id, lobby]) => ({ id, ...lobby })) });
+		return JSON.stringify({ type: "lobbies", lobbies: Array.from(lobbies, ([id, lobby]) => ({
+			id,
+			name: lobby.name,
+			ipv4: lobby.ipv4,
+			ipv6: lobby.ipv6,
+			ipv4Port: lobby.ipv4Port,
+			ipv6Port: lobby.ipv6Port,
+			version: lobby.version,
+			resultActions: lobby.resultActions
+		})) });
 	}
 
 	private broadcast(lobbies: Map<string, Lobby>) {
@@ -243,8 +253,9 @@ export class LobbyRegistry extends DurableObject<Env> {
 		const name = this.string(data.name, "Unknown").slice(0, 64);
 		const version = this.string(data.version).trim().slice(0, 32);
 		const ipv6Port = this.port(data.ipv6Port) || ipv4Port;
+		const directIpv4Port = this.port(data.directIpv4Port);
 		const resultActions = data.resultActions === true;
-		const lobby = { name, ipv4, ipv6, ipv4Port, ipv6Port, version, resultActions };
+		const lobby = { name, ipv4, ipv6, ipv4Port, ipv6Port, directIpv4Port, version, resultActions };
 
 		lobbies.set(id, lobby);
 		await this.ctx.storage.put(`${LOBBY_PREFIX}${id}`, lobby);
@@ -297,7 +308,9 @@ export class LobbyRegistry extends DurableObject<Env> {
 		if (!ipv4Port) joiner.ipv4 = "";
 		if (!ipv6Port) joiner.ipv6 = "";
 		this.send(hostWs, { type: "punch", peerIpv4: joiner.ipv4, peerIpv6: joiner.ipv6, peerIpv4Port: ipv4Port, peerIpv6Port: ipv6Port });
-		this.send(ws, { type: "punch", peerIpv4: lobby.ipv4, peerIpv6: lobby.ipv6, peerIpv4Port: lobby.ipv4Port, peerIpv6Port: lobby.ipv6Port });
+		const response: Record<string, unknown> = { type: "punch", peerIpv4: lobby.ipv4, peerIpv6: lobby.ipv6, peerIpv4Port: lobby.ipv4Port, peerIpv6Port: lobby.ipv6Port };
+		if (lobby.directIpv4Port) response.peerDirectIpv4Port = lobby.directIpv4Port;
+		this.send(ws, response);
 	}
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
