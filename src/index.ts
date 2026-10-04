@@ -15,10 +15,14 @@ interface Lobby {
 	version: string;
 	createdAt?: number;
 	resultActions?: boolean;
-	phase?: "Lobby" | "In-Game" | "In-Landview";
+	phase?: "Lobby" | "In-Game" | "In-Landview" | "Loading";
 	joinable?: boolean;
 	maxPlayers?: number;
 	players?: string[];
+	spectatorSupport?: number;
+	spectatorsEnabled?: boolean;
+	maxSpectators?: number;
+	spectatorCount?: number;
 }
 
 const MAX_LOBBIES = 100;
@@ -33,6 +37,10 @@ enum NetJoinRejection {
 	Locked = 2,
 	Full = 3,
 	Version = 4,
+	SpectatorState = 5,
+	SpectatorsDisabled = 6,
+	SpectatorsFull = 7,
+	SpectatorsUnsupported = 8,
 }
 
 type RequestData = Record<string, unknown> & { action: string };
@@ -206,11 +214,23 @@ export class LobbyRegistry extends DurableObject<Env> {
 		if (data.maxPlayers !== undefined && (!Number.isInteger(data.maxPlayers) || Number(data.maxPlayers) < 1 || Number(data.maxPlayers) > 4)) return false;
 		if (data.players !== undefined && (!Array.isArray(data.players) || data.players.length > 4 || data.players.some(player => typeof player !== "string" || !player.length || textEncoder.encode(player).length > 31 || /[\u0000-\u001f]/.test(player)))) return false;
 		if (data.joinable !== undefined && typeof data.joinable !== "boolean") return false;
-		if (data.phase !== undefined && data.phase !== "Lobby" && data.phase !== "In-Game" && data.phase !== "In-Landview") return false;
+		if (data.phase !== undefined && data.phase !== "Lobby" && data.phase !== "In-Game" && data.phase !== "In-Landview" && data.phase !== "Loading") return false;
+		if (data.spectatorSupport !== undefined && data.spectatorSupport !== 1) return false;
+		if (data.spectatorsEnabled !== undefined && typeof data.spectatorsEnabled !== "boolean") return false;
+		if (data.maxSpectators !== undefined && (!Number.isInteger(data.maxSpectators) || Number(data.maxSpectators) < 0 || Number(data.maxSpectators) > 50)) {
+			return false;
+		}
+		if (data.spectatorCount !== undefined && (!Number.isInteger(data.spectatorCount) || Number(data.spectatorCount) < 0 || Number(data.spectatorCount) > 50)) {
+			return false;
+		}
 		if (data.maxPlayers !== undefined) lobby.maxPlayers = Number(data.maxPlayers);
 		if (Array.isArray(data.players)) lobby.players = data.players;
 		if (typeof data.joinable === "boolean") lobby.joinable = data.joinable;
-		if ((data.phase === "Lobby" || data.phase === "In-Landview") && lobby.phase !== "In-Game") lobby.phase = data.phase;
+		if (data.spectatorSupport === 1) lobby.spectatorSupport = 1;
+		if (typeof data.spectatorsEnabled === "boolean") lobby.spectatorsEnabled = data.spectatorsEnabled;
+		if (data.maxSpectators !== undefined) lobby.maxSpectators = Number(data.maxSpectators);
+		if (data.spectatorCount !== undefined) lobby.spectatorCount = Number(data.spectatorCount);
+		if ((data.phase === "Lobby" || data.phase === "In-Landview" || data.phase === "Loading") && lobby.phase !== "In-Game") lobby.phase = data.phase;
 		if (lobby.phase === "In-Game" || data.phase === "In-Game") lobby.joinable = false;
 		return true;
 	}
@@ -324,10 +344,19 @@ export class LobbyRegistry extends DurableObject<Env> {
 		const lobby = (hostWs.deserializeAttachment() as LobbyAttachment).lobby!;
 		const version = this.string(data.version).trim().split(/\s+/, 1)[0];
 		const hostVersion = lobby.version.trim().split(/\s+/, 1)[0];
+		if (data.role !== undefined && data.role !== "player" && data.role !== "spectator") return this.error(ws, "Invalid connection role");
 		if (version && hostVersion && version !== hostVersion) return this.error(ws, "The host is using a different game version.", NetJoinRejection.Version);
-		if (lobby.phase === "In-Game") return this.error(ws, "Game has already started.", NetJoinRejection.InGame);
-		if (lobby.joinable === false) return this.error(ws, "Joining is temporarily locked.", NetJoinRejection.Locked);
-		if (lobby.players && lobby.maxPlayers && lobby.players.length >= lobby.maxPlayers) return this.error(ws, "Lobby is full.", NetJoinRejection.Full);
+		if (data.role === "spectator") {
+			if (lobby.spectatorSupport !== 1) return this.error(ws, "This host does not support joining spectators.", NetJoinRejection.SpectatorsUnsupported);
+			if (!version || !hostVersion) return this.error(ws, "Spectating requires the same game build.", NetJoinRejection.Version);
+			if (lobby.phase !== "In-Game") return this.error(ws, "Spectators can only join a running game.", NetJoinRejection.SpectatorState);
+			if (lobby.spectatorsEnabled !== true) return this.error(ws, "The host has disabled spectator joins.", NetJoinRejection.SpectatorsDisabled);
+			if (!lobby.maxSpectators || lobby.spectatorCount === undefined || lobby.spectatorCount >= lobby.maxSpectators) return this.error(ws, "All spectator connections are occupied.", NetJoinRejection.SpectatorsFull);
+		} else {
+			if (lobby.phase === "In-Game") return this.error(ws, "Game has already started.", NetJoinRejection.InGame);
+			if (lobby.joinable === false) return this.error(ws, "Joining is temporarily locked.", NetJoinRejection.Locked);
+			if (lobby.players && lobby.maxPlayers && lobby.players.length >= lobby.maxPlayers) return this.error(ws, "Lobby is full.", NetJoinRejection.Full);
+		}
 		if (hostWs === ws) return this.error(ws, "Host not connected");
 		const joiner = this.ips(ws, data.myIpv4, data.myIpv6);
 		if (!ipv4Port) joiner.ipv4 = "";
