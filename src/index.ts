@@ -168,7 +168,8 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 	private async notifyDiscord(lobby: Lobby, action: LobbyAction, players: string[] = [], mapName = "", mapNumber = 0)
 	{
-		if (lobby.name === "test" || !this.env.DISCORD_WEBHOOK_URL) return;
+		const isTest = (value?: string) => value?.trim().toLowerCase() === "test";
+		if (isTest(lobby.name) || lobby.players?.some(isTest) || players.some(isTest) || !this.env.DISCORD_WEBHOOK_URL) return;
 		try {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
 			webhookUrl.searchParams.set("wait", "true");
