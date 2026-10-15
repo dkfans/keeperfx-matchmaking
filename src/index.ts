@@ -173,16 +173,18 @@ export class LobbyRegistry extends DurableObject<Env> {
 			const webhookUrl = new URL(this.env.DISCORD_WEBHOOK_URL);
 			webhookUrl.searchParams.set("wait", "true");
 			const name = escapeDiscordMarkdown(lobby.name || "Unknown");
-			let content = `**${name}** opened a lobby (**${escapeDiscordMarkdown(lobby.version || "Unknown")}**)`;
-			if (action === "cancelled") content = `**${name}** cancelled their lobby.`;
-			if (action === "closed") content = `**${name}** closed their lobby / started the game.`;
-			if (action === "disconnected") content = `**${name}**'s lobby was closed because the host disconnected.`;
-			if (action === "timed_out") content = `**${name}**'s lobby was closed because it timed out.`;
+			const version = escapeDiscordMarkdown(lobby.version || "Unknown");
+			let content = `**${name}** opened a lobby (**${version}**)`;
+			if (lobby.players?.length) content = `**${name}** lobby opened. Host: **${escapeDiscordMarkdown(lobby.players[0])}**. (**${version}**)`;
+			if (action === "cancelled") content = `**${name}** lobby cancelled.`;
+			if (action === "closed") content = `**${name}** lobby closed / game started.`;
+			if (action === "disconnected") content = `**${name}** lobby closed because the host disconnected.`;
+			if (action === "timed_out") content = `**${name}** lobby closed because it timed out.`;
 			if (action === "started") {
 				let map = escapeDiscordMarkdown(mapName);
 				if (mapName && mapNumber) map = `${map} [${mapNumber}]`;
 				if (!mapName && mapNumber) map = `#${mapNumber}`;
-				content = `**${name}** started a match`;
+				content = `**${name}** match started`;
 				if (players.length) content += `. Players: **${players.map(escapeDiscordMarkdown).join("**, **")}**`;
 				if (map) content += `. Map: **${map}**`;
 				content += ".";
