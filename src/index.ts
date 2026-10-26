@@ -175,8 +175,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 			webhookUrl.searchParams.set("wait", "true");
 			const name = escapeDiscordMarkdown(lobby.name || "Unknown");
 			const version = escapeDiscordMarkdown(lobby.version || "Unknown");
-			let content = `**${name}** opened a lobby (**${version}**)`;
-			if (lobby.players?.length) content = `**${name}** lobby opened. Host: **${escapeDiscordMarkdown(lobby.players[0])}**. (**${version}**)`;
+			let content = `**${escapeDiscordMarkdown(lobby.players?.[0] || lobby.name || "Unknown")}** opened a lobby (**${version}**)`;
 			if (action === "cancelled") content = `**${name}** lobby cancelled.`;
 			if (action === "closed") content = `**${name}** lobby closed / game started.`;
 			if (action === "disconnected") content = `**${name}** lobby closed because the host disconnected.`;
@@ -226,6 +225,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		if (data.spectatorCount !== undefined && (!Number.isInteger(data.spectatorCount) || Number(data.spectatorCount) < 0 || Number(data.spectatorCount) > 50)) {
 			return false;
 		}
+		if (typeof data.name === "string" && data.name.length) lobby.name = data.name.slice(0, 64);
 		if (data.maxPlayers !== undefined) lobby.maxPlayers = Number(data.maxPlayers);
 		if (Array.isArray(data.players)) lobby.players = data.players;
 		if (typeof data.joinable === "boolean") lobby.joinable = data.joinable;
