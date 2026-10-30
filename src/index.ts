@@ -23,6 +23,7 @@ interface Lobby {
 	spectatorsEnabled?: boolean;
 	maxSpectators?: number;
 	spectatorCount?: number;
+	rejoinOpen?: boolean;
 }
 
 const MAX_LOBBIES = 100;
@@ -220,6 +221,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		if (data.phase !== undefined && data.phase !== "Lobby" && data.phase !== "In-Game" && data.phase !== "In-Landview" && data.phase !== "Loading") return false;
 		if (data.spectatorSupport !== undefined && data.spectatorSupport !== 1) return false;
 		if (data.spectatorsEnabled !== undefined && typeof data.spectatorsEnabled !== "boolean") return false;
+		if (data.rejoinOpen !== undefined && typeof data.rejoinOpen !== "boolean") return false;
 		if (data.maxSpectators !== undefined && (!Number.isInteger(data.maxSpectators) || Number(data.maxSpectators) < 0 || Number(data.maxSpectators) > 50)) {
 			return false;
 		}
@@ -232,6 +234,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 		if (typeof data.joinable === "boolean") lobby.joinable = data.joinable;
 		if (data.spectatorSupport === 1) lobby.spectatorSupport = 1;
 		if (typeof data.spectatorsEnabled === "boolean") lobby.spectatorsEnabled = data.spectatorsEnabled;
+		if (typeof data.rejoinOpen === "boolean") lobby.rejoinOpen = data.rejoinOpen;
 		if (data.maxSpectators !== undefined) lobby.maxSpectators = Number(data.maxSpectators);
 		if (data.spectatorCount !== undefined) lobby.spectatorCount = Number(data.spectatorCount);
 		if ((data.phase === "Lobby" || data.phase === "In-Landview" || data.phase === "Loading") && lobby.phase !== "In-Game") lobby.phase = data.phase;
@@ -354,7 +357,7 @@ export class LobbyRegistry extends DurableObject<Env> {
 			if (lobby.spectatorSupport !== 1) return this.error(ws, "This host does not support joining spectators.", NetJoinRejection.SpectatorsUnsupported);
 			if (!version || !hostVersion) return this.error(ws, "Spectating requires the same game build.", NetJoinRejection.Version);
 			if (lobby.phase !== "In-Game") return this.error(ws, "Spectators can only join a running game.", NetJoinRejection.SpectatorState);
-			if (lobby.spectatorsEnabled !== true) return this.error(ws, "The host has disabled spectator joins.", NetJoinRejection.SpectatorsDisabled);
+			if (lobby.spectatorsEnabled !== true && lobby.rejoinOpen !== true) return this.error(ws, "The host has disabled spectator joins.", NetJoinRejection.SpectatorsDisabled);
 			if (!lobby.maxSpectators || lobby.spectatorCount === undefined || lobby.spectatorCount >= lobby.maxSpectators) return this.error(ws, "All spectator connections are occupied.", NetJoinRejection.SpectatorsFull);
 		} else {
 			if (lobby.phase === "In-Game") return this.error(ws, "Game has already started.", NetJoinRejection.InGame);
