@@ -215,8 +215,8 @@ export class LobbyRegistry extends DurableObject<Env> {
 
 	private metadata(data: RequestData, lobby: Lobby)
 	{
-		if (data.maxPlayers !== undefined && (!Number.isInteger(data.maxPlayers) || Number(data.maxPlayers) < 1 || Number(data.maxPlayers) > 4)) return false;
-		if (data.players !== undefined && (!Array.isArray(data.players) || data.players.length > 4 || data.players.some(player => typeof player !== "string" || !player.length || textEncoder.encode(player).length > 31 || /[\u0000-\u001f]/.test(player)))) return false;
+		if (data.maxPlayers !== undefined && (!Number.isInteger(data.maxPlayers) || Number(data.maxPlayers) < 1 || Number(data.maxPlayers) > 8)) return false;
+		if (data.players !== undefined && (!Array.isArray(data.players) || data.players.length > 8 || data.players.some(player => typeof player !== "string" || !player.length || textEncoder.encode(player).length > 31 || /[\u0000-\u001f]/.test(player)))) return false;
 		if (data.joinable !== undefined && typeof data.joinable !== "boolean") return false;
 		if (data.phase !== undefined && data.phase !== "Lobby" && data.phase !== "In-Game" && data.phase !== "In-Landview" && data.phase !== "Loading") return false;
 		if (data.spectatorSupport !== undefined && data.spectatorSupport !== 1) return false;
